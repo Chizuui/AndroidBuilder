@@ -25,6 +25,14 @@ on:
         required: true
         default: true
         type: boolean
+      release_type:
+        description: Release Type
+        required: true
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Prerelease
       tag:
         description: Release Tag (boleh pakai spasi)
         required: true
@@ -110,6 +118,15 @@ jobs:
           TAG=$(echo "$TAG" | tr ' ' '-')
           echo "TAG_NAME=$TAG" >> $GITHUB_ENV
 
+      - name: Set Release Type
+        if: github.event.inputs.publish_release == 'true'
+        run: |
+          if [ "${{ github.event.inputs.release_type }}" == "Prerelease" ]; then
+            echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+          else
+            echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+          fi
+
       - name: Extract Commit Messages
         if: github.event.inputs.publish_release == 'true' && github.event.inputs.commit_links != ''
         id: commits
@@ -159,65 +176,34 @@ jobs:
                 fi
               fi
             done
-          } >> $GITHUB_STEP_SUMMARY
-          
-          # Save ke output juga
-          {
-            echo "## Commits Included"
-            echo ""
-            
-            IFS='|' read -ra LINKS <<< "$COMMIT_LINKS"
-            for link in "${LINKS[@]}"; do
-              link=$(echo "$link" | xargs)
-              
-              if [[ $link =~ github\.com/([^/]+)/([^/]+)/commit/([a-f0-9]+) ]]; then
-                OWNER="${BASH_REMATCH[1]}"
-                REPO="${BASH_REMATCH[2]}"
-                COMMIT_HASH="${BASH_REMATCH[3]}"
-                SHORT_HASH="${COMMIT_HASH:0:7}"
-                
-                COMMIT_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                  "https://api.github.com/repos/$OWNER/$REPO/commits/$COMMIT_HASH")
-                
-                COMMIT_MESSAGE=$(echo "$COMMIT_DATA" | jq -r '.commit.message' 2>/dev/null || echo "")
-                
-                if [ ! -z "$COMMIT_MESSAGE" ]; then
-                  COMMIT_TITLE=$(echo "$COMMIT_MESSAGE" | head -1)
-                  COMMIT_BODY=$(echo "$COMMIT_MESSAGE" | tail -n +2 | sed '/^$/d')
-                  
-                  echo "### [$SHORT_HASH]($link) $COMMIT_TITLE"
-                  echo ""
-                  
-                  if [ ! -z "$COMMIT_BODY" ]; then
-                    echo "\`\`\`"
-                    echo "$COMMIT_BODY"
-                    echo "\`\`\`"
-                    echo ""
-                  fi
-                fi
-              fi
-            done
           } > /tmp/commit_description.txt
           
-          cat /tmp/commit_description.txt >> $GITHUB_OUTPUT
-          echo "commit_description<<EOF" >> $GITHUB_OUTPUT
-          cat /tmp/commit_description.txt >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Save ke GITHUB_OUTPUT dengan proper EOF handling
+          {
+            echo "commit_description<<EOF"
+            cat /tmp/commit_description.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Determine Release Body
         if: github.event.inputs.publish_release == 'true'
         id: body
+        env:
+          MANUAL_DESC: ${{ github.event.inputs.manual_description }}
+          COMMIT_DESC: ${{ steps.commits.outputs.commit_description }}
         run: |
           if [ -z "${{ github.event.inputs.commit_links }}" ]; then
-            echo "release_body<<EOF" >> $GITHUB_OUTPUT
-            cat << 'BODY'
-${{ github.event.inputs.manual_description }}
-BODY
-            echo "EOF" >> $GITHUB_OUTPUT
+            {
+              echo "release_body<<EOF"
+              echo "$MANUAL_DESC"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "release_body<<EOF" >> $GITHUB_OUTPUT
-            cat /tmp/commit_description.txt >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            {
+              echo "release_body<<EOF"
+              cat /tmp/commit_description.txt
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Publish GitHub Release
@@ -229,7 +215,7 @@ BODY
           body: ${{ steps.body.outputs.release_body }}
           generate_release_notes: false
           draft: false
-          prerelease: false
+          prerelease: ${{ env.IS_PRERELEASE }}
           overwrite_files: true
           files: |
             source/android/app/build/outputs/**/*.apk
