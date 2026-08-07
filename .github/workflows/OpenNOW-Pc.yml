@@ -292,6 +292,15 @@ jobs:
         working-directory: opennow-source/opennow-stable
         run: npm run typecheck
 
+      # Build the native raw-mouse addon (src-native) - packaged via
+      # extraResources build/Release/opennow_input.node. Uses input:rebuild
+      # (node-gyp rebuild = configure + build) so a fresh checkout works.
+      # Requires the node-gyp toolchain (VS Build Tools / Xcode CLT /
+      # build-essential + X11 deps).
+      - name: Build native input addon
+        working-directory: opennow-source/opennow-stable
+        run: npm run input:rebuild
+
       - name: Build Electron renderer
         working-directory: opennow-source/opennow-stable
         run: npm run build
@@ -442,6 +451,15 @@ jobs:
         working-directory: opennow-source/opennow-stable
         run: npm run typecheck
 
+      # Build the native raw-mouse addon (src-native) - packaged via
+      # extraResources build/Release/opennow_input.node. Uses input:rebuild
+      # (node-gyp rebuild = configure + build) so a fresh checkout works.
+      # Requires the node-gyp toolchain (VS Build Tools / Xcode CLT /
+      # build-essential + X11 deps).
+      - name: Build native input addon
+        working-directory: opennow-source/opennow-stable
+        run: npm run input:rebuild
+
       - name: Build Electron renderer
         working-directory: opennow-source/opennow-stable
         run: npm run build
@@ -572,6 +590,15 @@ jobs:
       - name: TypeScript check
         working-directory: opennow-source/opennow-stable
         run: npm run typecheck
+
+      # Build the native raw-mouse addon (src-native) - packaged via
+      # extraResources build/Release/opennow_input.node. Uses input:rebuild
+      # (node-gyp rebuild = configure + build) so a fresh checkout works.
+      # Requires the node-gyp toolchain (VS Build Tools / Xcode CLT /
+      # build-essential + X11 deps).
+      - name: Build native input addon
+        working-directory: opennow-source/opennow-stable
+        run: npm run input:rebuild
 
       - name: Build Electron renderer
         working-directory: opennow-source/opennow-stable
