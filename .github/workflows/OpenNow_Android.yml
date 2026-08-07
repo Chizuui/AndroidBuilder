@@ -7,42 +7,42 @@ on:
   workflow_dispatch:
     inputs:
       repository:
-        description: "Repository (owner/repo)"
+        description: Repository (owner/repo)
         required: true
-        default: "Chizuui/OpenNOW-Modified"
+        default: Chizuui/OpenNOW-Modified
 
       branch:
-        description: "Branch"
+        description: Branch
         required: true
-        default: "android-native-live-features"
+        default: android-native-live-features
 
       build_type:
-        description: "Build Type"
+        description: Build Type
         required: true
-        default: "Release"
+        default: Release
         type: choice
         options:
           - Release
           - Debug
 
       publish_release:
-        description: "Publish GitHub Release"
+        description: Publish GitHub Release
         required: true
         default: true
         type: boolean
 
       tag:
-        description: "Release Tag"
+        description: Release Tag
         required: true
-        default: "v0.1.0"
+        default: v0.1.0
 
       release_title:
-        description: "Release Title"
+        description: Release Title
         required: true
-        default: "OpenNOW Android"
+        default: OpenNOW Android
 
       release_description:
-        description: "Release Description"
+        description: Release Description
         required: true
         default: |
           ## Changelog
@@ -74,6 +74,16 @@ jobs:
           java-version: "21"
           cache: gradle
 
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/gradle/libs.versions.toml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
@@ -96,28 +106,28 @@ jobs:
       - name: Build Release
         if: github.event.inputs.build_type == 'Release'
         working-directory: source/android
-        run: ./gradlew assembleRelease --stacktrace --no-daemon
+        run: |
+          ./gradlew \
+            assembleRelease \
+            --stacktrace \
+            --no-daemon
 
       - name: Build Debug
         if: github.event.inputs.build_type == 'Debug'
         working-directory: source/android
-        run: ./gradlew assembleDebug --stacktrace --no-daemon
+        run: |
+          ./gradlew \
+            assembleDebug \
+            --stacktrace \
+            --no-daemon
 
-      - name: Upload APK
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Android-${{ github.event.inputs.build_type }}
           path: |
             source/android/app/build/outputs/**/*.apk
-
-      - name: Upload AAB
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Android-AAB
-          path: |
             source/android/app/build/outputs/**/*.aab
-          if-no-files-found: ignore
 
       - name: Publish GitHub Release
         if: github.event.inputs.publish_release == 'true'
