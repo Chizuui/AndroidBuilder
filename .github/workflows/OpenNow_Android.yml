@@ -1,8 +1,6 @@
 name: Build Android
-
 permissions:
   contents: write
-
 on:
   workflow_dispatch:
     inputs:
@@ -10,12 +8,10 @@ on:
         description: Repository (owner/repo)
         required: true
         default: Chizuui/OpenNOW-Modified
-
       branch:
         description: Branch
         required: true
         default: android-native-live-features
-
       build_type:
         description: Build Type
         required: true
@@ -24,39 +20,37 @@ on:
         options:
           - Release
           - Debug
-
       publish_release:
         description: Publish GitHub Release
         required: true
         default: true
         type: boolean
-
       tag:
         description: Release Tag (boleh pakai spasi)
         required: true
         default: v1.0.0 Build 1
-
       release_title:
         description: Release Title
         required: true
         default: OpenNOW Android
-
-      release_description:
-        description: Release Description (Markdown)
-        required: true
+      commit_links:
+        description: 'Commit links (pipe-separated: link1 | link2 | link3)'
+        required: false
+        default: ''
+      manual_description:
+        description: Release Description (gunakan jika commit_links kosong)
+        required: false
         default: |
           ## Changelog
-
           - Built with GitHub Actions
+          - Latest features included
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-
     env:
       GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx8g"
-
     steps:
       - name: Checkout Builder Repository
         uses: actions/checkout@v4
@@ -115,7 +109,116 @@ jobs:
           TAG="${{ github.event.inputs.tag }}"
           TAG=$(echo "$TAG" | tr ' ' '-')
           echo "TAG_NAME=$TAG" >> $GITHUB_ENV
-          echo "Using tag: $TAG"
+
+      - name: Extract Commit Messages
+        if: github.event.inputs.publish_release == 'true' && github.event.inputs.commit_links != ''
+        id: commits
+        run: |
+          COMMIT_LINKS="${{ github.event.inputs.commit_links }}"
+          
+          # Split by pipe dan process setiap link
+          IFS='|' read -ra LINKS <<< "$COMMIT_LINKS"
+          
+          {
+            echo "## Commits Included"
+            echo ""
+            
+            for link in "${LINKS[@]}"; do
+              link=$(echo "$link" | xargs)  # trim whitespace
+              
+              # Extract owner/repo dan commit hash dari GitHub URL
+              if [[ $link =~ github\.com/([^/]+)/([^/]+)/commit/([a-f0-9]+) ]]; then
+                OWNER="${BASH_REMATCH[1]}"
+                REPO="${BASH_REMATCH[2]}"
+                COMMIT_HASH="${BASH_REMATCH[3]}"
+                SHORT_HASH="${COMMIT_HASH:0:7}"
+                
+                # Fetch commit data pake GitHub API
+                COMMIT_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                  "https://api.github.com/repos/$OWNER/$REPO/commits/$COMMIT_HASH")
+                
+                # Extract full message (handle multi-line)
+                COMMIT_MESSAGE=$(echo "$COMMIT_DATA" | jq -r '.commit.message' 2>/dev/null || echo "")
+                
+                if [ ! -z "$COMMIT_MESSAGE" ]; then
+                  # Ambil title line (first line) doang untuk header
+                  COMMIT_TITLE=$(echo "$COMMIT_MESSAGE" | head -1)
+                  
+                  # Format: [hash] (link) + title
+                  echo "### [$SHORT_HASH]($link) $COMMIT_TITLE"
+                  echo ""
+                  
+                  # Jika ada body (multi-line), tampilkan dengan indent
+                  COMMIT_BODY=$(echo "$COMMIT_MESSAGE" | tail -n +2 | sed '/^$/d')
+                  if [ ! -z "$COMMIT_BODY" ]; then
+                    echo "\`\`\`"
+                    echo "$COMMIT_BODY"
+                    echo "\`\`\`"
+                    echo ""
+                  fi
+                fi
+              fi
+            done
+          } >> $GITHUB_STEP_SUMMARY
+          
+          # Save ke output juga
+          {
+            echo "## Commits Included"
+            echo ""
+            
+            IFS='|' read -ra LINKS <<< "$COMMIT_LINKS"
+            for link in "${LINKS[@]}"; do
+              link=$(echo "$link" | xargs)
+              
+              if [[ $link =~ github\.com/([^/]+)/([^/]+)/commit/([a-f0-9]+) ]]; then
+                OWNER="${BASH_REMATCH[1]}"
+                REPO="${BASH_REMATCH[2]}"
+                COMMIT_HASH="${BASH_REMATCH[3]}"
+                SHORT_HASH="${COMMIT_HASH:0:7}"
+                
+                COMMIT_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                  "https://api.github.com/repos/$OWNER/$REPO/commits/$COMMIT_HASH")
+                
+                COMMIT_MESSAGE=$(echo "$COMMIT_DATA" | jq -r '.commit.message' 2>/dev/null || echo "")
+                
+                if [ ! -z "$COMMIT_MESSAGE" ]; then
+                  COMMIT_TITLE=$(echo "$COMMIT_MESSAGE" | head -1)
+                  COMMIT_BODY=$(echo "$COMMIT_MESSAGE" | tail -n +2 | sed '/^$/d')
+                  
+                  echo "### [$SHORT_HASH]($link) $COMMIT_TITLE"
+                  echo ""
+                  
+                  if [ ! -z "$COMMIT_BODY" ]; then
+                    echo "\`\`\`"
+                    echo "$COMMIT_BODY"
+                    echo "\`\`\`"
+                    echo ""
+                  fi
+                fi
+              fi
+            done
+          } > /tmp/commit_description.txt
+          
+          cat /tmp/commit_description.txt >> $GITHUB_OUTPUT
+          echo "commit_description<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/commit_description.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Determine Release Body
+        if: github.event.inputs.publish_release == 'true'
+        id: body
+        run: |
+          if [ -z "${{ github.event.inputs.commit_links }}" ]; then
+            echo "release_body<<EOF" >> $GITHUB_OUTPUT
+            cat << 'BODY'
+${{ github.event.inputs.manual_description }}
+BODY
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "release_body<<EOF" >> $GITHUB_OUTPUT
+            cat /tmp/commit_description.txt >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
 
       - name: Publish GitHub Release
         if: github.event.inputs.publish_release == 'true'
@@ -123,7 +226,7 @@ jobs:
         with:
           tag_name: ${{ env.TAG_NAME }}
           name: ${{ github.event.inputs.release_title }}
-          body: ${{ github.event.inputs.release_description }}
+          body: ${{ steps.body.outputs.release_body }}
           generate_release_notes: false
           draft: false
           prerelease: false
