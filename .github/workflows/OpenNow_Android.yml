@@ -1,5 +1,8 @@
 name: Build Android
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -21,6 +24,30 @@ on:
         options:
           - Release
           - Debug
+
+      publish_release:
+        description: "Publish GitHub Release"
+        required: true
+        default: true
+        type: boolean
+
+      tag:
+        description: "Release Tag"
+        required: true
+        default: "v0.1.0"
+
+      release_title:
+        description: "Release Title"
+        required: true
+        default: "OpenNOW Android"
+
+      release_description:
+        description: "Release Description"
+        required: true
+        default: |
+          ## Changelog
+
+          - Built with GitHub Actions
 
 jobs:
   build:
@@ -91,3 +118,19 @@ jobs:
           path: |
             source/android/app/build/outputs/**/*.aab
           if-no-files-found: ignore
+
+      - name: Publish GitHub Release
+        if: github.event.inputs.publish_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.release_title }}
+          body: ${{ github.event.inputs.release_description }}
+          files: |
+            source/android/app/build/outputs/**/*.apk
+            source/android/app/build/outputs/**/*.aab
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
