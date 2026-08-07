@@ -423,7 +423,7 @@ jobs:
         working-directory: opennow-source
         run: |
           npm install
-          npm --prefix opennow-stable install
+          npm --prefix opennow-stable install --ignore-scripts
 
       - name: TypeScript check
         working-directory: opennow-source
