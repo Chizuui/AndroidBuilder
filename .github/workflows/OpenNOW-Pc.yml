@@ -1,0 +1,586 @@
+name: OpenNOW Desktop Multi-Platform Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Repository (owner/repo)'
+        required: true
+        default: 'Chizuui/OpenNOW-Modified'
+      branch:
+        description: 'Branch'
+        required: true
+        default: 'redesign-desktop-editorial-dark'
+      build_type:
+        description: 'Build Type'
+        required: true
+        type: choice
+        options:
+          - Release
+          - Debug
+      publish_release:
+        description: 'Publish GitHub Release'
+        required: false
+        type: boolean
+        default: true
+      release_type:
+        description: 'Release Type'
+        required: true
+        type: choice
+        options:
+          - Release
+          - Release Candidate
+          - Beta
+          - Alpha
+      release_tag:
+        description: 'Release Tag (boleh pakai spasi)'
+        required: true
+      release_title:
+        description: 'Release Title'
+        required: true
+      commit_links:
+        description: 'Commit links (pipe-separated: link1 | link2 | link3)'
+        required: false
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  NODE_VERSION: "20"
+  RUST_VERSION: "1.75"
+
+jobs:
+  # ============================================================================
+  # Setup & Prepare
+  # ============================================================================
+  prepare:
+    runs-on: ubuntu-latest
+    name: Prepare Build
+    outputs:
+      repo: ${{ steps.parse.outputs.repo }}
+      branch: ${{ steps.parse.outputs.branch }}
+      build_type: ${{ steps.parse.outputs.build_type }}
+      release_tag_clean: ${{ steps.parse.outputs.release_tag_clean }}
+      matrix_os: ${{ steps.prepare_matrix.outputs.matrix }}
+    
+    steps:
+      - name: Parse inputs
+        id: parse
+        run: |
+          # Parse repository
+          REPO="${{ github.event.inputs.repository }}"
+          echo "repo=${REPO}" >> $GITHUB_OUTPUT
+          echo "branch=${{ github.event.inputs.branch }}" >> $GITHUB_OUTPUT
+          echo "build_type=${{ github.event.inputs.build_type }}" >> $GITHUB_OUTPUT
+          
+          # Clean release tag (remove spaces for use in filenames)
+          TAG_CLEAN=$(echo "${{ github.event.inputs.release_tag }}" | tr ' ' '_')
+          echo "release_tag_clean=${TAG_CLEAN}" >> $GITHUB_OUTPUT
+          
+          echo "✓ Repository: ${REPO}"
+          echo "✓ Branch: ${{ github.event.inputs.branch }}"
+          echo "✓ Build Type: ${{ github.event.inputs.build_type }}"
+          echo "✓ Release Tag: ${{ github.event.inputs.release_tag }}"
+
+      - name: Prepare build matrix
+        id: prepare_matrix
+        run: |
+          MATRIX='["windows-latest", "macos-latest", "ubuntu-latest"]'
+          echo "matrix=${MATRIX}" >> $GITHUB_OUTPUT
+          echo "✓ Build matrix prepared for 3 platforms"
+
+  # ============================================================================
+  # Job 1: Windows Build
+  # ============================================================================
+  build-windows:
+    needs: prepare
+    runs-on: windows-latest
+    name: Build Windows (x64)
+    
+    steps:
+      - name: Checkout OpenNOW
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.prepare.outputs.repo }}
+          ref: ${{ needs.prepare.outputs.branch }}
+          path: opennow-source
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: |
+            opennow-source/package-lock.json
+            opennow-source/opennow-stable/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            opennow-source/native/opennow-streamer/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Download GStreamer SDK (Windows)
+        run: |
+          $gstVersion = "1.24.7"
+          $gstUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/${gstVersion}/msvc/gstreamer-1.0-msvc-x86_64-${gstVersion}.msi"
+          
+          echo "Downloading GStreamer SDK from: $gstUrl"
+          Invoke-WebRequest -Uri $gstUrl -OutFile "gstreamer-sdk.msi" -ErrorAction Stop
+          
+          msiexec.exe /i gstreamer-sdk.msi /qn /norestart /L*V "gstreamer-install.log"
+          Start-Sleep -Seconds 30
+          
+          $gstRoot = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+          echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "PKG_CONFIG_PATH=$gstRoot\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          
+          if (Test-Path "$gstRoot\bin\gst-launch-1.0.exe") {
+            Write-Host "✓ GStreamer SDK installed successfully"
+          } else {
+            Write-Error "✗ GStreamer SDK installation failed"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Install dependencies
+        working-directory: opennow-source
+        run: |
+          npm ci
+          npm --prefix opennow-stable ci
+
+      - name: TypeScript check
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run typecheck
+
+      - name: Build Electron renderer
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run build
+        env:
+          CI: true
+
+      - name: Build native streamer
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run native:build
+        env:
+          RUST_BACKTRACE: 1
+          OPENNOW_NATIVE_STREAMER_FEATURES: gstreamer
+          OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: windows-x64
+
+      - name: Build distribution
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          OPENNOW_SKIP_NATIVE_VERIFY: 0
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: opennow-source/opennow-stable/dist-release/*.exe
+          retention-days: 5
+
+      - name: List artifacts
+        working-directory: opennow-source
+        run: |
+          echo "=== Windows Build Artifacts ==="
+          Get-ChildItem -Path "opennow-stable/dist-release" -Filter "*.exe" | ForEach-Object { Write-Host $_.FullName }
+        shell: pwsh
+
+  # ============================================================================
+  # Job 2: macOS Build (Universal)
+  # ============================================================================
+  build-macos:
+    needs: prepare
+    runs-on: macos-latest
+    name: Build macOS (${{ matrix.target }})
+    strategy:
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    
+    steps:
+      - name: Checkout OpenNOW
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.prepare.outputs.repo }}
+          ref: ${{ needs.prepare.outputs.branch }}
+          path: opennow-source
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: |
+            opennow-source/package-lock.json
+            opennow-source/opennow-stable/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            opennow-source/native/opennow-streamer/target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Install GStreamer (Homebrew)
+        run: |
+          brew update
+          brew install gstreamer gstreamer-vaapi
+          gst-launch-1.0 --version
+          
+          gstRoot=$(brew --prefix gstreamer)
+          echo "GSTREAMER_1_0_ROOT_MACOS=$gstRoot" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$gstRoot/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "DYLD_LIBRARY_PATH=$gstRoot/lib:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        working-directory: opennow-source
+        run: |
+          npm ci
+          npm --prefix opennow-stable ci
+
+      - name: TypeScript check
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run typecheck
+
+      - name: Build Electron renderer
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run build
+        env:
+          CI: true
+
+      - name: Build native streamer
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run native:build
+        env:
+          RUST_BACKTRACE: 1
+          OPENNOW_NATIVE_STREAMER_TARGET: ${{ matrix.target }}
+          OPENNOW_NATIVE_STREAMER_FEATURES: gstreamer
+          OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: macos-${{ matrix.target }}
+
+      - name: Build distribution
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run dist
+        env:
+          OPENNOW_SKIP_NATIVE_VERIFY: 0
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.target }}
+          path: |
+            opennow-source/opennow-stable/dist-release/*.dmg
+            opennow-source/opennow-stable/dist-release/*.zip
+          retention-days: 5
+
+      - name: List artifacts
+        working-directory: opennow-source
+        run: |
+          echo "=== macOS Build Artifacts (${{ matrix.target }}) ==="
+          ls -lh opennow-stable/dist-release/*.{dmg,zip} 2>/dev/null || echo "No artifacts found"
+
+  # ============================================================================
+  # Job 3: Linux Build
+  # ============================================================================
+  build-linux:
+    needs: prepare
+    runs-on: ubuntu-latest
+    name: Build Linux (x64)
+    
+    steps:
+      - name: Checkout OpenNOW
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.prepare.outputs.repo }}
+          ref: ${{ needs.prepare.outputs.branch }}
+          path: opennow-source
+
+      - name: Update APT packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3
+
+      - name: Install GStreamer
+        run: |
+          sudo apt-get install -y \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-nice \
+            gstreamer1.0-vaapi \
+            gstreamer1.0-gl \
+            gstreamer1.0-x \
+            gstreamer1.0-alsa \
+            libva2 \
+            libva-drm2 \
+            libavformat-dev \
+            libavcodec-dev \
+            libswscale-dev \
+            libavutil-dev \
+            libavfilter-dev \
+            libavdevice-dev
+          
+          gst-launch-1.0 --version
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: |
+            opennow-source/package-lock.json
+            opennow-source/opennow-stable/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            opennow-source/native/opennow-streamer/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install dependencies
+        working-directory: opennow-source
+        run: |
+          npm ci
+          npm --prefix opennow-stable ci
+
+      - name: TypeScript check
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run typecheck
+
+      - name: Build Electron renderer
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run build
+        env:
+          CI: true
+
+      - name: Build native streamer
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run native:build
+        env:
+          RUST_BACKTRACE: 1
+          OPENNOW_NATIVE_STREAMER_FEATURES: gstreamer
+          OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: linux-x64
+
+      - name: Build distribution
+        working-directory: opennow-source
+        run: npm --prefix opennow-stable run dist
+        env:
+          OPENNOW_SKIP_NATIVE_VERIFY: 0
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: |
+            opennow-source/opennow-stable/dist-release/*.AppImage
+            opennow-source/opennow-stable/dist-release/*.deb
+          retention-days: 5
+
+      - name: List artifacts
+        working-directory: opennow-source
+        run: |
+          echo "=== Linux Build Artifacts ==="
+          ls -lh opennow-source/opennow-stable/dist-release/*.{AppImage,deb} 2>/dev/null || echo "No artifacts found"
+
+  # ============================================================================
+  # Job 4: Create Release & Upload Artifacts
+  # ============================================================================
+  release:
+    needs: [prepare, build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    name: Create Release
+    if: always()
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Prepare artifacts for release
+        run: |
+          mkdir -p release-files
+          
+          # Windows
+          if [ -d all-artifacts/windows-x64 ]; then
+            cp all-artifacts/windows-x64/* release-files/ 2>/dev/null || true
+            echo "✓ Windows artifacts copied"
+          fi
+          
+          # macOS x64
+          if [ -d all-artifacts/macos-x86_64-apple-darwin ]; then
+            cp all-artifacts/macos-x86_64-apple-darwin/* release-files/ 2>/dev/null || true
+            echo "✓ macOS (x64) artifacts copied"
+          fi
+          
+          # macOS ARM64
+          if [ -d all-artifacts/macos-aarch64-apple-darwin ]; then
+            cp all-artifacts/macos-aarch64-apple-darwin/* release-files/ 2>/dev/null || true
+            echo "✓ macOS (ARM64) artifacts copied"
+          fi
+          
+          # Linux
+          if [ -d all-artifacts/linux-x64 ]; then
+            cp all-artifacts/linux-x64/* release-files/ 2>/dev/null || true
+            echo "✓ Linux artifacts copied"
+          fi
+          
+          echo "=== Release Files ==="
+          ls -lh release-files/ || echo "No artifacts found"
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          # OpenNOW Desktop - ${{ github.event.inputs.release_title }}
+          
+          **Release Type**: ${{ github.event.inputs.release_type }}  
+          **Build Date**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')  
+          **Build**: ${{ github.run_number }}  
+          
+          ## Build Artifacts
+          
+          ### Windows (x64)
+          - NSIS Installer (.exe)
+          - Portable Executable (.exe)
+          
+          ### macOS (Universal)
+          - DMG + ZIP (Intel x86_64)
+          - DMG + ZIP (Apple Silicon ARM64)
+          
+          ### Linux (x64)
+          - AppImage (portable)
+          - Debian Package (.deb)
+          
+          ## Installation
+          
+          **Windows**: Run the .exe installer or extract portable version.
+          
+          **macOS**: Mount .dmg and drag to Applications, or extract .zip.
+          
+          **Linux**: 
+          ```bash
+          chmod +x OpenNOW-*.AppImage && ./OpenNOW-*.AppImage
+          # OR
+          sudo dpkg -i OpenNOW-*.deb && sudo apt-get install -f
+          ```
+          
+          ## Build Information
+          
+          - **Repository**: ${{ github.event.inputs.repository }}
+          - **Branch**: ${{ github.event.inputs.branch }}
+          - **Build Type**: ${{ github.event.inputs.build_type }}
+          - **Triggered by**: GitHub Actions
+          
+          EOF
+          
+          # Add commit links if provided
+          if [ -n "${{ github.event.inputs.commit_links }}" ]; then
+            echo "" >> release_notes.md
+            echo "## Commit References" >> release_notes.md
+            echo "" >> release_notes.md
+            
+            # Parse pipe-separated links
+            IFS='|' read -ra LINKS <<< "${{ github.event.inputs.commit_links }}"
+            for link in "${LINKS[@]}"; do
+              link=$(echo "$link" | xargs)  # trim whitespace
+              if [ -n "$link" ]; then
+                echo "- [$link]($link)" >> release_notes.md
+              fi
+            done
+          fi
+          
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        if: github.event.inputs.publish_release == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          repository: ${{ github.event.inputs.repository }}
+          tag_name: ${{ github.event.inputs.release_tag }}
+          name: ${{ github.event.inputs.release_title }}
+          body_path: release_notes.md
+          files: release-files/*
+          draft: false
+          prerelease: ${{ github.event.inputs.release_type != 'Release' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-desktop-${{ needs.prepare.outputs.release_tag_clean }}-${{ github.run_number }}
+          path: release-files/
+          retention-days: 30
+
+      - name: Build summary
+        run: |
+          echo "## ✓ OpenNOW Desktop Multi-Platform Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: ${{ github.event.inputs.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.event.inputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Type**: ${{ github.event.inputs.build_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release Tag**: ${{ github.event.inputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release Title**: ${{ github.event.inputs.release_title }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          find release-files -type f -exec bash -c 'echo "- $(basename {}): $(du -h {} | cut -f1)"' \; | sort >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Release" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.publish_release }}" == "true" ]; then
+            echo "✓ Released to GitHub Releases: ${{ github.event.inputs.repository }}/releases/tag/${{ github.event.inputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "📦 Artifacts available in workflow artifacts" >> $GITHUB_STEP_SUMMARY
+          fi
