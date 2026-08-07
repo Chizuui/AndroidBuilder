@@ -32,9 +32,9 @@ on:
         type: boolean
 
       tag:
-        description: Release Tag
+        description: Release Tag (boleh pakai spasi)
         required: true
-        default: v0.1.0
+        default: v1.0.0 Build 1
 
       release_title:
         description: Release Title
@@ -42,7 +42,7 @@ on:
         default: OpenNOW Android
 
       release_description:
-        description: Release Description
+        description: Release Description (Markdown)
         required: true
         default: |
           ## Changelog
@@ -74,23 +74,13 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/gradle/libs.versions.toml') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
-
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Accept SDK Licenses
         run: yes | sdkmanager --licenses
 
-      - name: Install SDK Components
+      - name: Install Android SDK Components
         run: |
           sdkmanager \
             "platform-tools" \
@@ -106,41 +96,39 @@ jobs:
       - name: Build Release
         if: github.event.inputs.build_type == 'Release'
         working-directory: source/android
-        run: |
-          ./gradlew \
-            assembleRelease \
-            --stacktrace \
-            --no-daemon
+        run: ./gradlew assembleRelease --stacktrace --no-daemon
 
       - name: Build Debug
         if: github.event.inputs.build_type == 'Debug'
         working-directory: source/android
-        run: |
-          ./gradlew \
-            assembleDebug \
-            --stacktrace \
-            --no-daemon
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
 
-      - name: Upload Artifact
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Android-${{ github.event.inputs.build_type }}
-          path: |
-            source/android/app/build/outputs/**/*.apk
-            source/android/app/build/outputs/**/*.aab
+          path: source/android/app/build/outputs/**/*.apk
+
+      - name: Prepare Release Tag
+        if: github.event.inputs.publish_release == 'true'
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          TAG=$(echo "$TAG" | tr ' ' '-')
+          echo "TAG_NAME=$TAG" >> $GITHUB_ENV
+          echo "Using tag: $TAG"
 
       - name: Publish GitHub Release
         if: github.event.inputs.publish_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag }}
+          tag_name: ${{ env.TAG_NAME }}
           name: ${{ github.event.inputs.release_title }}
           body: ${{ github.event.inputs.release_description }}
-          files: |
-            source/android/app/build/outputs/**/*.apk
-            source/android/app/build/outputs/**/*.aab
+          generate_release_notes: false
           draft: false
           prerelease: false
-          generate_release_notes: false
+          overwrite_files: true
+          files: |
+            source/android/app/build/outputs/**/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
