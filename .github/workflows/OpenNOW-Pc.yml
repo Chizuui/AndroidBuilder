@@ -290,6 +290,13 @@ jobs:
           echo "DYLD_LIBRARY_PATH=$gstRoot/lib:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
 
+      - name: Remove Windows-only native dependency
+        working-directory: opennow-source/opennow-stable
+        run: |
+          npm pkg delete dependencies.openow-chizui || true
+          npm pkg delete devDependencies.openow-chizui || true
+          npm pkg delete optionalDependencies.openow-chizui || true
+
       - name: Install dependencies
         working-directory: opennow-source
         run: |
