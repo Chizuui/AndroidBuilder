@@ -1,0 +1,93 @@
+name: Build Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Repository (owner/repo)"
+        required: true
+        default: "Chizuui/OpenNOW-Modified"
+
+      branch:
+        description: "Branch"
+        required: true
+        default: "android-native-live-features"
+
+      build_type:
+        description: "Build Type"
+        required: true
+        default: "Release"
+        type: choice
+        options:
+          - Release
+          - Debug
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx8g"
+
+    steps:
+      - name: Checkout Builder Repository
+        uses: actions/checkout@v4
+
+      - name: Clone Target Repository
+        run: |
+          git clone --recursive https://github.com/${{ github.event.inputs.repository }}.git source
+          cd source
+          git checkout ${{ github.event.inputs.branch }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept SDK Licenses
+        run: yes | sdkmanager --licenses
+
+      - name: Install SDK Components
+        run: |
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "cmake;3.22.1" \
+            "ndk;29.0.13846066"
+
+      - name: Make gradlew executable
+        working-directory: source/android
+        run: chmod +x gradlew
+
+      - name: Build Release
+        if: github.event.inputs.build_type == 'Release'
+        working-directory: source/android
+        run: ./gradlew assembleRelease --stacktrace --no-daemon
+
+      - name: Build Debug
+        if: github.event.inputs.build_type == 'Debug'
+        working-directory: source/android
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-${{ github.event.inputs.build_type }}
+          path: |
+            source/android/app/build/outputs/**/*.apk
+
+      - name: Upload AAB
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-AAB
+          path: |
+            source/android/app/build/outputs/**/*.aab
+          if-no-files-found: ignore
