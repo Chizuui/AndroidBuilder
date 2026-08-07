@@ -48,7 +48,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  NODE_VERSION: "20"
+  NODE_VERSION: "22"
   RUST_VERSION: "stable"
 
 jobs:
@@ -137,54 +137,106 @@ jobs:
 
       - name: Download GStreamer SDK (Windows)
         run: |
-          $gstPackagesUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/"
-          $gstIndex = Invoke-WebRequest -Uri $gstPackagesUrl -ErrorAction Stop
-          $gstVersions = [regex]::Matches($gstIndex.Content, 'href="(\d+\.\d+\.\d+)/"') |
-            ForEach-Object { $_.Groups[1].Value } |
-            Sort-Object -Unique |
-            Sort-Object { [version]$_ } -Descending
-          
-          if (-not $gstVersions) {
-            Write-Error "✗ Could not discover any GStreamer versions from $gstPackagesUrl"
-            exit 1
-          }
-
+          $maxRetries = 3
+          $retryCount = 0
           $downloaded = $false
-          foreach ($gstVersion in $gstVersions) {
-            $gstRuntimeUrl = "${gstPackagesUrl}${gstVersion}/msvc/gstreamer-1.0-msvc-x86_64-${gstVersion}.msi"
-            $gstDevelUrl = "${gstPackagesUrl}${gstVersion}/msvc/gstreamer-1.0-devel-msvc-x86_64-${gstVersion}.msi"
-            Write-Host "Trying GStreamer SDK runtime: $gstRuntimeUrl"
-            Write-Host "Trying GStreamer SDK development package: $gstDevelUrl"
-
+          
+          while ($retryCount -lt $maxRetries -and -not $downloaded) {
             try {
-              Invoke-WebRequest -Uri $gstRuntimeUrl -OutFile "gstreamer-runtime.msi" -ErrorAction Stop
-              Invoke-WebRequest -Uri $gstDevelUrl -OutFile "gstreamer-devel.msi" -ErrorAction Stop
-              $downloaded = $true
-              Write-Host "✓ Downloaded GStreamer SDK version: $gstVersion"
-              break
+              $gstPackagesUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/"
+              Write-Host "📥 Fetching GStreamer versions from $gstPackagesUrl (attempt $($retryCount + 1)/$maxRetries)"
+              
+              $gstIndex = Invoke-WebRequest -Uri $gstPackagesUrl -TimeoutSec 30 -ErrorAction Stop
+              $gstVersions = [regex]::Matches($gstIndex.Content, 'href="(\d+\.\d+\.\d+)/"') |
+                ForEach-Object { $_.Groups[1].Value } |
+                Sort-Object -Unique |
+                Sort-Object { [version]$_ } -Descending
+              
+              if (-not $gstVersions) {
+                throw "No GStreamer versions found in index"
+              }
+
+              Write-Host "✓ Found $(($gstVersions | Measure-Object).Count) GStreamer versions"
+              
+              foreach ($gstVersion in $gstVersions) {
+                $gstRuntimeUrl = "${gstPackagesUrl}${gstVersion}/msvc/gstreamer-1.0-msvc-x86_64-${gstVersion}.msi"
+                $gstDevelUrl = "${gstPackagesUrl}${gstVersion}/msvc/gstreamer-1.0-devel-msvc-x86_64-${gstVersion}.msi"
+                
+                Write-Host "🔍 Trying GStreamer SDK version: $gstVersion"
+
+                try {
+                  Write-Host "  → Downloading runtime MSI..."
+                  Invoke-WebRequest -Uri $gstRuntimeUrl -OutFile "gstreamer-runtime.msi" -TimeoutSec 60 -ErrorAction Stop
+                  
+                  Write-Host "  → Downloading development MSI..."
+                  Invoke-WebRequest -Uri $gstDevelUrl -OutFile "gstreamer-devel.msi" -TimeoutSec 60 -ErrorAction Stop
+                  
+                  $downloaded = $true
+                  Write-Host "✓ Successfully downloaded GStreamer SDK version: $gstVersion"
+                  break
+                } catch {
+                  Write-Host "  ✗ Version $gstVersion download failed, trying next version..."
+                  Remove-Item -Force "gstreamer-runtime.msi" -ErrorAction SilentlyContinue
+                  Remove-Item -Force "gstreamer-devel.msi" -ErrorAction SilentlyContinue
+                }
+              }
+              
+              if ($downloaded) {
+                Write-Host "✓ GStreamer SDK download succeeded"
+                break
+              } else {
+                throw "Failed to download any GStreamer SDK version"
+              }
+              
             } catch {
-              Write-Host "GStreamer version $gstVersion is not available as both runtime+devel MSI, trying next version..."
+              $retryCount++
+              if ($retryCount -lt $maxRetries) {
+                Write-Host "⚠ Attempt $retryCount failed: $($_.Exception.Message)"
+                Write-Host "⏳ Waiting 60 seconds before retry..."
+                Start-Sleep -Seconds 60
+              } else {
+                Write-Error "✗ Failed to download GStreamer SDK after $maxRetries attempts: $($_.Exception.Message)"
+                exit 1
+              }
             }
           }
-
+          
           if (-not $downloaded) {
-            Write-Error "✗ Failed to download a GStreamer SDK MSI from discovered versions"
+            Write-Error "✗ GStreamer SDK download failed completely"
             exit 1
           }
-          
-          Write-Host "Installing GStreamer runtime..."
+        shell: pwsh
+
+      - name: Install GStreamer SDK (Windows)
+        run: |
+          Write-Host "📦 Installing GStreamer Runtime MSI..."
           msiexec.exe /i gstreamer-runtime.msi /qn /norestart /L*V "gstreamer-runtime-install.log"
+          $runtimeExit = $LASTEXITCODE
           
-          Write-Host "Installing GStreamer development package..."
+          Write-Host "📦 Installing GStreamer Development MSI..."
           msiexec.exe /i gstreamer-devel.msi /qn /norestart /L*V "gstreamer-devel-install.log"
+          $develExit = $LASTEXITCODE
           
+          if ($runtimeExit -ne 0 -or $develExit -ne 0) {
+            Write-Host "⚠ MSI installation warning (exit codes: runtime=$runtimeExit, devel=$develExit)"
+            Write-Host "Checking installation logs..."
+            if (Test-Path "gstreamer-runtime-install.log") {
+              Get-Content "gstreamer-runtime-install.log" | Select-Object -Last 20
+            }
+          }
+          
+          Write-Host "⏳ Waiting for GStreamer installation to complete..."
           Start-Sleep -Seconds 30
           
           $gstRoot = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
           if (-not (Test-Path $gstRoot)) {
             Write-Error "✗ GStreamer root directory not found at $gstRoot"
+            Write-Host "Checking C:\Program Files\gstreamer..."
+            Get-ChildItem -Path "C:\Program Files\gstreamer" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
             exit 1
           }
+          
+          Write-Host "✓ GStreamer root found at $gstRoot"
           
           $pkgConfigExe = "$gstRoot\bin\pkg-config.exe"
           if (-not (Test-Path $pkgConfigExe)) {
@@ -192,19 +244,23 @@ jobs:
           }
           
           if (-not (Test-Path $pkgConfigExe)) {
-            Write-Error "✗ pkg-config executable not found"
+            Write-Error "✗ pkg-config executable not found at $pkgConfigExe"
             exit 1
           }
+          
+          Write-Host "✓ pkg-config found at $pkgConfigExe"
           
           echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "$gstRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           echo "PKG_CONFIG=$pkgConfigExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "PKG_CONFIG_PATH=$gstRoot\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
-          if ((Test-Path "$gstRoot\bin\gst-launch-1.0.exe") -and (Test-Path $pkgConfigExe)) {
-            Write-Host "✓ GStreamer SDK installed successfully"
+          Write-Host "🧪 Verifying GStreamer installation..."
+          & $pkgConfigExe --cflags --libs gstreamer-1.0
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "✓ GStreamer SDK installed and configured successfully"
           } else {
-            Write-Error "✗ GStreamer SDK installation verification failed"
+            Write-Error "✗ GStreamer configuration check failed"
             exit 1
           }
         shell: pwsh
@@ -254,7 +310,7 @@ jobs:
           Write-Host "=== Windows Build Artifacts ==="
           $artifacts = Get-ChildItem -Path "opennow-stable/dist-release" -Filter "*.exe" -ErrorAction SilentlyContinue
           if ($artifacts) {
-            $artifacts | ForEach-Object { Write-Host $_.FullName }
+            $artifacts | ForEach-Object { Write-Host "✓ $($_.Name) ($('{0:N2}' -f ($_.Length/1MB)) MB)" }
           } else {
             Write-Host "⚠ No .exe artifacts found"
           }
@@ -296,6 +352,11 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
 
+      - name: Verify Rust target
+        run: |
+          echo "Checking Rust target availability..."
+          rustc --print target-list | grep "${{ matrix.target }}" && echo "✓ Target ${{ matrix.target }} available"
+
       - name: Cache Rust dependencies
         uses: actions/cache@v4
         with:
@@ -311,11 +372,21 @@ jobs:
 
       - name: Install GStreamer (Homebrew)
         run: |
+          # Disable Homebrew tap trust requirement
+          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+          
+          echo "📦 Updating Homebrew..."
           brew update
+          
+          echo "📦 Installing GStreamer..."
           brew install gstreamer
+          
+          echo "🧪 Verifying GStreamer installation..."
           gst-launch-1.0 --version
           
           gstRoot=$(brew --prefix gstreamer)
+          echo "✓ GStreamer installed at $gstRoot"
+          
           echo "GSTREAMER_1_0_ROOT_MACOS=$gstRoot" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$gstRoot/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "DYLD_LIBRARY_PATH=$gstRoot/lib:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
@@ -324,9 +395,9 @@ jobs:
       - name: Remove Windows-only native dependency
         working-directory: opennow-source/opennow-stable
         run: |
-          npm pkg delete dependencies.openow-chizui || true
-          npm pkg delete devDependencies.openow-chizui || true
-          npm pkg delete optionalDependencies.openow-chizui || true
+          npm pkg delete dependencies.opennow-chizui || true
+          npm pkg delete devDependencies.opennow-chizui || true
+          npm pkg delete optionalDependencies.opennow-chizui || true
 
       - name: Install dependencies
         working-directory: opennow-source
@@ -348,7 +419,8 @@ jobs:
         working-directory: opennow-source
         run: npm --prefix opennow-stable run native:build
         env:
-          RUST_BACKTRACE: 1
+          RUST_BACKTRACE: full
+          RUST_LOG: debug
           OPENNOW_NATIVE_STREAMER_TARGET: ${{ matrix.target }}
           OPENNOW_NATIVE_STREAMER_FEATURES: gstreamer
           OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: macos-${{ matrix.target }}
@@ -391,6 +463,20 @@ jobs:
           ref: ${{ needs.prepare.outputs.branch }}
           path: opennow-source
 
+      - name: System diagnostics
+        run: |
+          echo "=== System Information ==="
+          uname -a
+          lsb_release -a
+          
+          echo ""
+          echo "=== Disk Space ==="
+          df -h
+          
+          echo ""
+          echo "=== Memory ==="
+          free -h
+
       - name: Update APT packages
         run: |
           sudo apt-get update
@@ -398,6 +484,7 @@ jobs:
 
       - name: Install GStreamer
         run: |
+          echo "📦 Installing GStreamer and dependencies..."
           sudo apt-get install -y \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
@@ -421,6 +508,7 @@ jobs:
             libavfilter-dev \
             libavdevice-dev
           
+          echo "🧪 Verifying GStreamer installation..."
           gst-launch-1.0 --version
 
       - name: Setup Node.js
@@ -467,11 +555,12 @@ jobs:
         env:
           CI: true
 
-      - name: Build native streamer
+      - name: Build native streamer (verbose)
         working-directory: opennow-source
         run: npm --prefix opennow-stable run native:build
         env:
-          RUST_BACKTRACE: 1
+          RUST_BACKTRACE: full
+          RUST_LOG: debug
           OPENNOW_NATIVE_STREAMER_FEATURES: gstreamer
           OPENNOW_NATIVE_STREAMER_PLATFORM_KEY: linux-x64
 
@@ -520,28 +609,41 @@ jobs:
           if [ -d all-artifacts/windows-x64 ]; then
             cp all-artifacts/windows-x64/* release-files/ 2>/dev/null || true
             echo "✓ Windows artifacts copied"
+          else
+            echo "⚠ Windows artifacts directory not found"
           fi
           
           # macOS x64
           if [ -d all-artifacts/macos-x86_64-apple-darwin ]; then
             cp all-artifacts/macos-x86_64-apple-darwin/* release-files/ 2>/dev/null || true
             echo "✓ macOS (x64) artifacts copied"
+          else
+            echo "⚠ macOS (x64) artifacts directory not found"
           fi
           
           # macOS ARM64
           if [ -d all-artifacts/macos-aarch64-apple-darwin ]; then
             cp all-artifacts/macos-aarch64-apple-darwin/* release-files/ 2>/dev/null || true
             echo "✓ macOS (ARM64) artifacts copied"
+          else
+            echo "⚠ macOS (ARM64) artifacts directory not found"
           fi
           
           # Linux
           if [ -d all-artifacts/linux-x64 ]; then
             cp all-artifacts/linux-x64/* release-files/ 2>/dev/null || true
             echo "✓ Linux artifacts copied"
+          else
+            echo "⚠ Linux artifacts directory not found"
           fi
           
-          echo "=== Release Files ==="
-          ls -lh release-files/ || echo "⚠ No artifacts found"
+          echo ""
+          echo "=== Final Release Files ==="
+          if [ -d release-files ] && [ "$(ls -A release-files)" ]; then
+            ls -lh release-files/
+          else
+            echo "⚠ No artifacts found in release-files directory"
+          fi
 
       - name: Generate release notes
         id: release_notes
@@ -618,6 +720,7 @@ jobs:
           files: release-files/*
           draft: false
           prerelease: ${{ github.event.inputs.release_type != 'Release' }}
+          fail_on_unmatched_files: false
           token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -632,7 +735,7 @@ jobs:
       - name: Build summary
         if: always()
         run: |
-          echo "## ✓ OpenNOW Desktop Multi-Platform Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## ✓ OpenNOW Desktop Multi-Platform Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Build Information" >> $GITHUB_STEP_SUMMARY
           echo "- **Repository**: ${{ github.event.inputs.repository }}" >> $GITHUB_STEP_SUMMARY
@@ -643,11 +746,19 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Build Artifacts" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          find release-files -type f -exec bash -c 'echo "- $(basename {}): $(du -h {} | cut -f1)"' \; | sort >> $GITHUB_STEP_SUMMARY
+          if [ -d release-files ] && [ "$(ls -A release-files)" ]; then
+            find release-files -type f -exec bash -c 'echo "- $(basename {}): $(du -h {} | cut -f1)"' \; | sort >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠ No artifacts generated" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Release" >> $GITHUB_STEP_SUMMARY
           if [ "${{ github.event.inputs.publish_release }}" == "true" ]; then
-            echo "✓ Released to GitHub Releases: ${{ github.event.inputs.repository }}/releases/tag/${{ github.event.inputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+            if [ -d release-files ] && [ "$(ls -A release-files)" ]; then
+              echo "✓ Released to GitHub Releases: ${{ github.event.inputs.repository }}/releases/tag/${{ github.event.inputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "⚠ Release NOT published (no artifacts)" >> $GITHUB_STEP_SUMMARY
+            fi
           else
             echo "📦 Artifacts available in workflow artifacts" >> $GITHUB_STEP_SUMMARY
           fi
