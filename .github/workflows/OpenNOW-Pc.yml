@@ -137,11 +137,37 @@ jobs:
 
       - name: Download GStreamer SDK (Windows)
         run: |
-          $gstVersion = "1.24.7"
-          $gstUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/${gstVersion}/msvc/gstreamer-1.0-msvc-x86_64-${gstVersion}.msi"
+          $gstPackagesUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/"
+          $gstIndex = Invoke-WebRequest -Uri $gstPackagesUrl -ErrorAction Stop
+          $gstVersions = [regex]::Matches($gstIndex.Content, 'href="(\d+\.\d+\.\d+)/"') |
+            ForEach-Object { $_.Groups[1].Value } |
+            Sort-Object -Unique |
+            Sort-Object { [version]$_ } -Descending
           
-          echo "Downloading GStreamer SDK from: $gstUrl"
-          Invoke-WebRequest -Uri $gstUrl -OutFile "gstreamer-sdk.msi" -ErrorAction Stop
+          if (-not $gstVersions) {
+            Write-Error "✗ Could not discover any GStreamer versions from $gstPackagesUrl"
+            exit 1
+          }
+
+          $downloaded = $false
+          foreach ($gstVersion in $gstVersions) {
+            $gstUrl = "${gstPackagesUrl}${gstVersion}/msvc/gstreamer-1.0-msvc-x86_64-${gstVersion}.msi"
+            echo "Trying GStreamer SDK: $gstUrl"
+
+            try {
+              Invoke-WebRequest -Uri $gstUrl -OutFile "gstreamer-sdk.msi" -ErrorAction Stop
+              $downloaded = $true
+              echo "Downloaded GStreamer SDK version: $gstVersion"
+              break
+            } catch {
+              echo "GStreamer version $gstVersion is not available as MSI, trying next version..."
+            }
+          }
+
+          if (-not $downloaded) {
+            Write-Error "✗ Failed to download a GStreamer SDK MSI from discovered versions"
+            exit 1
+          }
           
           msiexec.exe /i gstreamer-sdk.msi /qn /norestart /L*V "gstreamer-install.log"
           Start-Sleep -Seconds 30
