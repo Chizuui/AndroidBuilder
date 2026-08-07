@@ -281,7 +281,7 @@ jobs:
       - name: Install GStreamer (Homebrew)
         run: |
           brew update
-          brew install gstreamer gstreamer-vaapi
+          brew install gstreamer
           gst-launch-1.0 --version
           
           gstRoot=$(brew --prefix gstreamer)
