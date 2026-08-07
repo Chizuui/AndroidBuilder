@@ -187,8 +187,8 @@ jobs:
       - name: Install dependencies
         working-directory: opennow-source
         run: |
-          npm ci
-          npm --prefix opennow-stable ci
+          npm install
+          npm --prefix opennow-stable install
 
       - name: TypeScript check
         working-directory: opennow-source
@@ -293,8 +293,8 @@ jobs:
       - name: Install dependencies
         working-directory: opennow-source
         run: |
-          npm ci
-          npm --prefix opennow-stable ci
+          npm install
+          npm --prefix opennow-stable install
 
       - name: TypeScript check
         working-directory: opennow-source
@@ -415,8 +415,8 @@ jobs:
       - name: Install dependencies
         working-directory: opennow-source
         run: |
-          npm ci
-          npm --prefix opennow-stable ci
+          npm install
+          npm --prefix opennow-stable install
 
       - name: TypeScript check
         working-directory: opennow-source
