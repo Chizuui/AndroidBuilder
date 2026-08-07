@@ -49,7 +49,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   NODE_VERSION: "20"
-  RUST_VERSION: "1.75"
+  RUST_VERSION: "stable"
 
 jobs:
   # ============================================================================
