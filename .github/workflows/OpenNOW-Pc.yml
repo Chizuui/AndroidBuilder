@@ -353,7 +353,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: opennow-source/opennow-stable/dist-release/*.exe
+          path: |
+            opennow-source/opennow-stable/dist-release/*.exe
+            # electron-updater update feed + differential updates for Windows.
+            # x64-only: a single latest.yml feed must not be overwritten by the
+            # arm64 job (which uploads only *-arm64.exe).
+            opennow-source/opennow-stable/dist-release/latest.yml
+            opennow-source/opennow-stable/dist-release/*.blockmap
           if-no-files-found: error
           retention-days: 5
 
@@ -612,6 +618,8 @@ jobs:
           path: |
             opennow-source/opennow-stable/dist-release/*.dmg
             opennow-source/opennow-stable/dist-release/*.zip
+            opennow-source/opennow-stable/dist-release/latest-mac*.yml
+            opennow-source/opennow-stable/dist-release/*.blockmap
           if-no-files-found: error
           retention-days: 5
 
@@ -767,6 +775,7 @@ jobs:
           path: |
             opennow-source/opennow-stable/dist-release/*.AppImage
             opennow-source/opennow-stable/dist-release/*.deb
+            opennow-source/opennow-stable/dist-release/latest-linux.yml
           if-no-files-found: error
           retention-days: 5
 
@@ -928,6 +937,7 @@ jobs:
           path: |
             opennow-source/opennow-stable/dist-release/*-arm64.AppImage
             opennow-source/opennow-stable/dist-release/*-arm64.deb
+            opennow-source/opennow-stable/dist-release/latest-linux-arm64.yml
           if-no-files-found: error
           retention-days: 5
 
